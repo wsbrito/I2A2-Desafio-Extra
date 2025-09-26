@@ -26,8 +26,8 @@ from langchain_openai import OpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
-from dotenv import load_dotenv
-load_dotenv()  # this will read .env and set environment variables
+#from dotenv import load_dotenv
+#load_dotenv()  # this will read .env and set environment variables
 
 
 # -------------------------
@@ -213,7 +213,6 @@ def truncate_summary(summary, max_chars=2000):
     text = json.dumps(summary, default=str, ensure_ascii=False, separators=(',', ':'))
     return text[:max_chars]
 
-
 # -------------------------
 # LLM Helper
 # -------------------------
@@ -240,10 +239,31 @@ Answer concisely with reasoning and a short conclusion."""
     chain = LLMChain(llm=llm, prompt=prompt)
     return llm, chain
 
+# -----------------------------------------
+# -----------------------------------------
+def recuperar_open_ai_key(st):
+
+    #with st.popover("Informar OPENAI_API_KEY"):
+    #    st.write("OPENAI_API_KEY:")
+    #    key = st.text_input("key")            
+    #    if st.button("Submit"):
+    #        os.environ['OPENAI_API_KEY'] = key
+    #        st.success("OPENAI_API_KEY informada!")
+    
+    st.write("Informar OPENAI_API_KEY:")
+    key = st.text_input("OPENAI_API_KEY:")
+    
+    if st.button("Gravar OPENAI_API_KEY"):
+        os.environ['OPENAI_API_KEY'] = key
+        st.success("OPENAI_API_KEY informada!")
+        st.rerun() # Rerun to update the main app after dialog closes
+
+
 # -------------------------
 # Streamlit App
 # -------------------------
 def main():
+
     st.set_page_config(page_title="I2A2 - Desafio Extra", layout="wide")
     st.title("I2A2 Desafio Extra - Agente de E.D.A.")
     st.markdown(
@@ -253,7 +273,6 @@ def main():
     # Sidebar controls
     st.sidebar.header("Controles & Memoria")
     uploaded_file = st.sidebar.file_uploader("Upload do arquivo CSV", type=["csv", "txt"])
-    use_sample = st.sidebar.checkbox("Use a amostra (cartão de crédito Kaggle) se não houver upload", value=False)
     if st.sidebar.button("Limpar memoria do agente"):
         clear_memory()
         st.sidebar.success("Memoria limpa.")
@@ -270,24 +289,7 @@ def main():
             st.sidebar.error(f"Não foi possível ler o arquivo: {e}")
             st.stop()
     else:
-        if use_sample:
-            st.sidebar.info("Usando conjunto de dados de amostra do arquivo local 'creditcard.csv', se estiver presente.")
-            # Try to read local sample placed by the user in same folder (if they provided ZIP earlier)
-            sample_paths = [
-                "Kaggle - Credit Card Fraud.csv",
-                "creditcard.csv",
-            ]
-            found = False
-            for p in sample_paths:
-                if os.path.exists(p):
-                    df = pd.read_csv(p)
-                    st.sidebar.success(f"Amostra carregada {p}")
-                    found = True
-                    break
-            if not found:
-                st.sidebar.warning("Nenhuma amostra local encontrada. Carregue um arquivo CSV ou coloque o arquivo CSV de amostra ao lado do aplicativo.")
-        else:
-            st.sidebar.write("Faça upload de um CSV para começar ou marque 'Usar amostra' para carregar uma amostra local.")
+        st.sidebar.write("Faça upload de um CSV para começar ou marque 'Usar amostra' para carregar uma amostra local.")
 
     if df is None:
         st.info("Aguardando o upload do CSV ou opte por usar uma amostra local. Após o carregamento, as análises pré-computadas aparecerão aqui.")
@@ -301,7 +303,7 @@ def main():
         if st.checkbox("Mostrar dados brutos (primeiras 200 linhas)", value=False):
             st.dataframe(df.head(200))
     with col2:
-        if st.checkbox("Mostrar tipos de colunas e contagens ausentes", value=True):
+        if st.checkbox("Mostrar tipos de colunas e contagens ausentes", value=False):
             dtypes = pd.DataFrame({"dtype": df.dtypes.astype(str), "missing": df.isnull().sum()})
             st.table(dtypes)
 
@@ -385,7 +387,8 @@ def main():
 
     # Initialize LangChain LLM/chain
     if os.getenv("OPENAI_API_KEY") is None:
-        st.warning("A chave da API OpenAI não está definida. Defina a variável de ambiente OPENAI_API_KEY para habilitar o LLM. Você ainda pode visualizar gráficos/tabelas computados.")
+        recuperar_open_ai_key(st)
+        st.warning("A chave da API OpenAI não está definida. Informe a OPENAI_API_KEY para habilitar o LLM. Você ainda pode visualizar gráficos/tabelas computados.")
     else:
         llm, chain = build_llm(summary)
 
@@ -403,7 +406,7 @@ def main():
         }
         # Send to LLM
         if os.getenv("OPENAI_API_KEY") is None:
-            st.error("Cannot call LLM: OPENAI_API_KEY not set.")
+            st.error("Impossibilidade de executar a LLM: OPENAI_API_KEY não foi informada.")
         else:
             try:
                 prompt_vars = {
