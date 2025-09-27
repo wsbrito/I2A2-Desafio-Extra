@@ -242,14 +242,6 @@ Answer concisely with reasoning and a short conclusion."""
 # -----------------------------------------
 # -----------------------------------------
 def recuperar_open_ai_key(st):
-
-    #with st.popover("Informar OPENAI_API_KEY"):
-    #    st.write("OPENAI_API_KEY:")
-    #    key = st.text_input("key")            
-    #    if st.button("Submit"):
-    #        os.environ['OPENAI_API_KEY'] = key
-    #        st.success("OPENAI_API_KEY informada!")
-    
     st.write("Informar OPENAI_API_KEY:")
     key = st.text_input("OPENAI_API_KEY:")
     
@@ -378,6 +370,11 @@ def main():
         if pre['outliers']['n_outliers'] > 0:
             st.write(pd.DataFrame(pre['outliers']['outlier_samples']))
 
+    # Initialize LangChain LLM/chain
+    if os.getenv("OPENAI_API_KEY") is None:
+        recuperar_open_ai_key(st)
+        st.warning("A chave da API OpenAI não está definida. Informe a OPENAI_API_KEY para habilitar o LLM. Você ainda pode visualizar gráficos/tabelas computados.")
+
     # ---- Conversational agent section ----
     st.subheader("Pergunte ao agente")
     st.markdown("Digite uma pergunta sobre o conjunto de dados (exemplo: 'Quais variáveis estão mais correlacionadas com o valor?' ou 'Existem padrões temporais?' ou 'Mostre-me a distribuição do valor da transação').")
@@ -386,10 +383,7 @@ def main():
     ask_button = st.button("Pergunte ao agente")
 
     # Initialize LangChain LLM/chain
-    if os.getenv("OPENAI_API_KEY") is None:
-        recuperar_open_ai_key(st)
-        st.warning("A chave da API OpenAI não está definida. Informe a OPENAI_API_KEY para habilitar o LLM. Você ainda pode visualizar gráficos/tabelas computados.")
-    else:
+    if os.getenv("OPENAI_API_KEY") is not None:
         llm, chain = build_llm(summary)
 
     if ask_button and user_question.strip() != "":
