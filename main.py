@@ -347,17 +347,9 @@ def create_agent_executor(summary: Dict[str, Any]):
 # Streamlit App
 # -------------------------
 def main():
-    st.set_page_config(page_title="I2A2 - Agente EDA Avançado", layout="wide")
-    st.title("🤖 Agente EDA com Visualização Dinâmica")
-    st.markdown("""
-    Este agente pode criar gráficos personalizados baseados em suas perguntas!
-    
-    **Exemplos de perguntas:**
-    - "Mostre-me a distribuição da coluna Amount"
-    - "Crie um scatter plot de Time vs Amount"
-    - "Quais são os outliers em V1?"
-    - "Mostre o mapa de correlação"
-    """)
+    st.set_page_config(page_title="I2A2 - Agente E.D.A.", layout="wide")
+    st.title("🤖 I2A2 - Agente E.D.A.")
+    st.subheader("Autor: Wagner dos Santos Brito")
 
     # Initialize session state
     if 'generated_plots' not in st.session_state:
