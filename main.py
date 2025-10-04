@@ -1,69 +1,78 @@
 """
-I2A2 - Desafio Extra - Enhanced with Dynamic Plotting
-Autor: Wagner dos Santos Brito (Enhanced by Claude)
-Data: 02/10/2025
+I2A2 - Agente EDA com Google Gemini (Gratuito)
+Autor: Wagner dos Santos Brito (Enhanced)
 """
 
 import os
 import json
 import tempfile
 from datetime import datetime
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Optional
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-import plotly.graph_objects as go
 
-from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 
-# LangChain / OpenAI
-from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+# LangChain com Google Gemini
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.agents import AgentExecutor, create_react_agent
 from langchain.tools import Tool
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.schema import SystemMessage, HumanMessage
+from langchain.prompts import PromptTemplate
 
+# this will read .env and set environment variables
 from dotenv import load_dotenv
-load_dotenv()  # this will read .env and set environment variables
-
+load_dotenv()  
 
 # -------------------------
-# Configuration / Constants
+# Configuration
 # -------------------------
 MEMORY_FILENAME = "memory.json"
 
-# Enhanced system prompt for plotting
-SYSTEM_PROMPT = """You are an expert data analyst assistant with visualization capabilities.
+SYSTEM_PROMPT = """Você é um assistente especialista em análise de dados com capacidade de criar visualizações.
 
-You have access to:
-1. Dataset summary with statistics, correlations, and structure
-2. A plotting tool that can create custom visualizations
+Você tem acesso a:
+1. Contexto dos dados (get_data_context): estrutura, estatísticas, correlações
+2. Ferramenta de plotagem (plot_data): para criar gráficos
 
-When users ask questions:
-- Analyze the data context provided
-- Answer in Portuguese (Brazilian)
-- Be concise but informative
-- When visualization would help, use the plot_data tool to create charts
-- Suggest which type of plot would be most appropriate
+IMPORTANTE: Sempre responda em Português do Brasil.
 
-Available plot types:
-- histogram: distribution of a numeric column
-- scatter: relationship between two numeric columns
-- box: boxplot for outlier detection
-- bar: categorical data counts or aggregations
-- line: time series or sequential data
-- correlation_heatmap: correlation matrix
-- pair_plot: multiple scatter plots
+REGRA FUNDAMENTAL SOBRE GRÁFICOS:
+- Crie gráficos SOMENTE quando o usuário solicitar explicitamente (palavras como: "mostre", "plote", "crie gráfico", "visualize", "exiba", "gere gráfico")
+- Se o usuário apenas perguntar ou pedir análise SEM mencionar visualização, responda apenas com texto
+- Não sugira criar gráficos, apenas crie quando explicitamente solicitado
 
-Always provide clear reasoning and actionable insights."""
+Para criar gráficos quando solicitado, use este formato EXATO:
+Action: plot_data
+Action Input: tipo|coluna_x|coluna_y|coluna_cor|título
+
+Tipos de gráfico disponíveis:
+- histogram: distribuição de valores (precisa coluna_x)
+- scatter: relação entre variáveis (precisa coluna_x e coluna_y)
+- box: detecção de outliers (precisa coluna_y)
+- bar: dados categóricos ou agregações (precisa coluna_x)
+- line: séries temporais (precisa coluna_x e coluna_y)
+- correlation_heatmap: matriz de correlação completa (sem parâmetros)
+
+Exemplos de uso:
+- histogram|Amount|||Distribuição de Valores
+- scatter|Time|Amount||Valores ao longo do tempo
+- correlation_heatmap||||Correlações
+
+Exemplos de perguntas:
+- "Qual a média de Amount?" → Responda SÓ com texto, SEM gráfico
+- "Mostre a distribuição de Amount" → Responda com texto E crie histogram
+- "Existe correlação entre X e Y?" → Responda SÓ com texto, SEM gráfico
+- "Plote X versus Y" → Responda com texto E crie scatter plot
+
+Seja direto, conciso e forneça insights valiosos sobre os dados."""
 
 # -------------------------
-# Global state for passing dataframe to tools
+# Global state
 # -------------------------
 _CURRENT_DF = None
 _CURRENT_SUMMARY = None
@@ -74,7 +83,7 @@ def set_current_data(df: pd.DataFrame, summary: Dict[str, Any]):
     _CURRENT_SUMMARY = summary
 
 # -------------------------
-# Utility: Memory
+# Memory Functions
 # -------------------------
 def load_memory(path: str = MEMORY_FILENAME) -> List[Dict[str, Any]]:
     if os.path.exists(path):
@@ -96,7 +105,7 @@ def clear_memory(path: str = MEMORY_FILENAME):
         os.remove(path)
 
 # -------------------------
-# EDA Helpers
+# Data Processing
 # -------------------------
 def safe_read_csv(uploaded_file) -> pd.DataFrame:
     if hasattr(uploaded_file, "read"):
@@ -111,18 +120,21 @@ def safe_read_csv(uploaded_file) -> pd.DataFrame:
 def summarize_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
     summary = {}
     summary['n_rows'], summary['n_cols'] = df.shape
-    dtypes = df.dtypes.apply(lambda x: x.name).to_dict()
-    summary['dtypes'] = dtypes
     summary['columns'] = list(df.columns)
-    summary['head'] = df.head(5).to_dict(orient="records")
-    summary['missing'] = df.isnull().sum().to_dict()
+    summary['dtypes'] = {col: str(dtype) for col, dtype in df.dtypes.items()}
+    summary['missing'] = {col: int(count) for col, count in df.isnull().sum().items() if count > 0}
     
     numeric = df.select_dtypes(include=[np.number])
     if not numeric.empty:
         desc = numeric.describe().to_dict()
-        medians = numeric.median().to_dict()
-        summary['numeric_describe'] = desc
-        summary['numeric_medians'] = medians
+        summary['numeric_stats'] = {
+            col: {
+                'mean': round(float(desc[col]['mean']), 2),
+                'std': round(float(desc[col]['std']), 2),
+                'min': round(float(desc[col]['min']), 2),
+                'max': round(float(desc[col]['max']), 2)
+            } for col in desc.keys()
+        }
         
         # Top correlations
         corr = numeric.corr()
@@ -131,54 +143,43 @@ def summarize_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
         for i in range(len(cols)):
             for j in range(i+1, len(cols)):
                 a, b = cols[i], cols[j]
-                corr_pairs.append((a, b, float(corr.iloc[i, j])))
+                val = float(corr.iloc[i, j])
+                if not np.isnan(val):
+                    corr_pairs.append((a, b, round(val, 3)))
         corr_pairs_sorted = sorted(corr_pairs, key=lambda x: abs(x[2]), reverse=True)[:10]
         summary['top_correlations'] = corr_pairs_sorted
     else:
-        summary['numeric_describe'] = {}
-        summary['numeric_medians'] = {}
+        summary['numeric_stats'] = {}
         summary['top_correlations'] = []
     
     return summary
 
-def detect_outliers_isolation_forest(df: pd.DataFrame, contamination: float = 0.01) -> Dict[str, Any]:
+def detect_outliers(df: pd.DataFrame) -> Dict[str, Any]:
     numeric = df.select_dtypes(include=[np.number])
     if numeric.shape[1] == 0:
-        return {'method': 'none', 'n_outliers': 0, 'outlier_indices': []}
+        return {'n_outliers': 0, 'outlier_indices': []}
     
-    imp = SimpleImputer(strategy="median")
-    X = imp.fit_transform(numeric)
-    scaler = StandardScaler()
-    Xs = scaler.fit_transform(X)
-    iso = IsolationForest(contamination=contamination, random_state=42)
-    preds = iso.fit_predict(Xs)
-    outlier_idx = np.where(preds == -1)[0].tolist()
-    
-    return {
-        'method': 'isolation_forest',
-        'n_outliers': len(outlier_idx),
-        'outlier_indices': outlier_idx,
-        'outlier_samples': numeric.iloc[outlier_idx].head(5).to_dict(orient="records")
-    }
+    try:
+        imp = SimpleImputer(strategy="median")
+        X = imp.fit_transform(numeric)
+        scaler = StandardScaler()
+        Xs = scaler.fit_transform(X)
+        iso = IsolationForest(contamination=0.01, random_state=42)
+        preds = iso.fit_predict(Xs)
+        outlier_idx = np.where(preds == -1)[0].tolist()
+        
+        return {
+            'n_outliers': len(outlier_idx),
+            'outlier_indices': outlier_idx[:10]  # Primeiros 10
+        }
+    except:
+        return {'n_outliers': 0, 'outlier_indices': []}
 
 # -------------------------
-# DYNAMIC PLOTTING TOOL
+# Plotting Functions
 # -------------------------
 def create_plot(plot_type: str, x_col: str = None, y_col: str = None, 
                 color_col: str = None, title: str = None) -> Optional[Any]:
-    """
-    Dynamically creates plots based on agent requests.
-    
-    Args:
-        plot_type: Type of plot (histogram, scatter, box, bar, line, correlation_heatmap)
-        x_col: Column name for x-axis
-        y_col: Column name for y-axis
-        color_col: Column for color encoding
-        title: Plot title
-    
-    Returns:
-        Plotly figure object or None
-    """
     global _CURRENT_DF
     
     if _CURRENT_DF is None:
@@ -191,43 +192,54 @@ def create_plot(plot_type: str, x_col: str = None, y_col: str = None,
             if not x_col or x_col not in df.columns:
                 return None
             fig = px.histogram(df, x=x_col, marginal="box", 
-                             title=title or f"Distribuição de {x_col}")
+                             title=title or f"Distribuição de {x_col}",
+                             labels={x_col: x_col})
+            fig.update_layout(showlegend=False)
             return fig
         
         elif plot_type == "scatter":
             if not x_col or not y_col or x_col not in df.columns or y_col not in df.columns:
                 return None
-            fig = px.scatter(df, x=x_col, y=y_col, color=color_col if color_col in df.columns else None,
-                           title=title or f"{y_col} vs {x_col}")
+            fig = px.scatter(df, x=x_col, y=y_col, 
+                           color=color_col if color_col and color_col in df.columns else None,
+                           title=title or f"{y_col} vs {x_col}",
+                           labels={x_col: x_col, y_col: y_col})
             return fig
         
         elif plot_type == "box":
             if not y_col or y_col not in df.columns:
                 return None
-            fig = px.box(df, y=y_col, x=x_col if x_col in df.columns else None,
-                        title=title or f"Boxplot de {y_col}")
+            fig = px.box(df, y=y_col, 
+                        x=x_col if x_col and x_col in df.columns else None,
+                        title=title or f"Boxplot de {y_col}",
+                        labels={y_col: y_col})
             return fig
         
         elif plot_type == "bar":
             if not x_col or x_col not in df.columns:
                 return None
-            # Aggregate if y_col provided, otherwise count
             if y_col and y_col in df.columns:
                 agg_df = df.groupby(x_col)[y_col].mean().reset_index()
+                agg_df = agg_df.sort_values(y_col, ascending=False).head(20)
                 fig = px.bar(agg_df, x=x_col, y=y_col,
-                           title=title or f"Média de {y_col} por {x_col}")
+                           title=title or f"Média de {y_col} por {x_col}",
+                           labels={x_col: x_col, y_col: y_col})
             else:
-                counts = df[x_col].value_counts().reset_index()
+                counts = df[x_col].value_counts().head(20).reset_index()
                 counts.columns = [x_col, 'count']
                 fig = px.bar(counts, x=x_col, y='count',
-                           title=title or f"Contagem de {x_col}")
+                           title=title or f"Contagem de {x_col}",
+                           labels={x_col: x_col, 'count': 'Contagem'})
             return fig
         
         elif plot_type == "line":
             if not x_col or not y_col or x_col not in df.columns or y_col not in df.columns:
                 return None
-            fig = px.line(df, x=x_col, y=y_col, color=color_col if color_col in df.columns else None,
-                        title=title or f"{y_col} ao longo de {x_col}")
+            df_sorted = df.sort_values(x_col)
+            fig = px.line(df_sorted, x=x_col, y=y_col, 
+                        color=color_col if color_col and color_col in df.columns else None,
+                        title=title or f"{y_col} ao longo de {x_col}",
+                        labels={x_col: x_col, y_col: y_col})
             return fig
         
         elif plot_type == "correlation_heatmap":
@@ -235,111 +247,140 @@ def create_plot(plot_type: str, x_col: str = None, y_col: str = None,
             if numeric.shape[1] < 2:
                 return None
             corr = numeric.corr()
-            fig = px.imshow(corr, text_auto=".2f", aspect="auto",
+            fig = px.imshow(corr, 
+                          text_auto=".2f", 
+                          aspect="auto",
+                          color_continuous_scale="RdBu_r",
                           title=title or "Mapa de Calor de Correlação")
+            fig.update_xaxes(side="bottom")
             return fig
         
-        else:
-            return None
-            
     except Exception as e:
         st.error(f"Erro ao criar gráfico: {e}")
         return None
 
 def plot_data_tool(query: str) -> str:
-    """
-    Tool for the agent to create visualizations.
-    
-    Expected format: "plot_type|x_col|y_col|color_col|title"
-    Example: "scatter|Time|Amount||Transações ao longo do tempo"
-    """
+    """Ferramenta para criar visualizações."""
     try:
-        parts = query.split("|")
-        plot_type = parts[0].strip() if len(parts) > 0 else ""
-        x_col = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
-        y_col = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
-        color_col = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
-        title = parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
+        parts = [p.strip() for p in query.split("|")]
+        plot_type = parts[0] if len(parts) > 0 else ""
+        x_col = parts[1] if len(parts) > 1 and parts[1] else None
+        y_col = parts[2] if len(parts) > 2 and parts[2] else None
+        color_col = parts[3] if len(parts) > 3 and parts[3] else None
+        title = parts[4] if len(parts) > 4 and parts[4] else None
         
         fig = create_plot(plot_type, x_col, y_col, color_col, title)
         
         if fig is not None:
-            # Store figure in session state for display
             if 'generated_plots' not in st.session_state:
                 st.session_state.generated_plots = []
             st.session_state.generated_plots.append(fig)
-            return f"✓ Gráfico criado: {plot_type} ({x_col}, {y_col}). O gráfico será exibido abaixo."
+            return f"✓ Gráfico {plot_type} criado com sucesso! O gráfico será exibido abaixo da resposta."
         else:
-            return f"✗ Não foi possível criar o gráfico. Verifique os parâmetros."
+            return f"✗ Não foi possível criar o gráfico {plot_type}. Verifique se as colunas '{x_col}' e '{y_col}' existem no dataset."
     
     except Exception as e:
-        return f"✗ Erro ao criar gráfico: {str(e)}"
+        return f"✗ Erro ao processar: {str(e)}"
 
 def get_data_context_tool(query: str) -> str:
-    """Tool to provide data context to the agent."""
+    """Fornece informações sobre o dataset."""
     global _CURRENT_SUMMARY
     
     if _CURRENT_SUMMARY is None:
-        return "Nenhum dado carregado."
+        return "Nenhum dado foi carregado ainda."
     
-    # Return a focused subset based on query keywords
     context = {
-        "shape": {"rows": _CURRENT_SUMMARY['n_rows'], "cols": _CURRENT_SUMMARY['n_cols']},
-        "columns": _CURRENT_SUMMARY['columns'],
-        "numeric_columns": list(_CURRENT_SUMMARY.get('numeric_describe', {}).keys()),
-        "top_correlations": _CURRENT_SUMMARY.get('top_correlations', [])[:5],
-        "dtypes_sample": dict(list(_CURRENT_SUMMARY.get('dtypes', {}).items())[:10])
+        "total_linhas": _CURRENT_SUMMARY['n_rows'],
+        "total_colunas": _CURRENT_SUMMARY['n_cols'],
+        "colunas_disponiveis": _CURRENT_SUMMARY['columns'][:30],
+        "colunas_numericas": list(_CURRENT_SUMMARY.get('numeric_stats', {}).keys()),
+        "estatisticas_amostra": dict(list(_CURRENT_SUMMARY.get('numeric_stats', {}).items())[:5]),
+        "top_5_correlacoes": _CURRENT_SUMMARY.get('top_correlations', [])[:5],
+        "colunas_com_dados_faltantes": _CURRENT_SUMMARY.get('missing', {})
     }
     
     return json.dumps(context, indent=2, ensure_ascii=False)
 
 # -------------------------
-# LangChain Agent Setup
+# Agent Setup with Gemini
 # -------------------------
-def create_agent_executor(summary: Dict[str, Any]):
-    """Creates a LangChain agent with tools for plotting and data access."""
+def create_agent_executor(google_api_key: str):
+    """Cria o agente usando Google Gemini."""
     
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY não definida.")
+    # Configurar Gemini
+    llm = ChatGoogleGenerativeAI(
+        model="gemma-3n-e2b-it",
+        google_api_key=google_api_key,
+        temperature=0.1,
+        convert_system_message_to_human=True
+    )
     
-    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.2)
-    
-    # Define tools
+    # Definir ferramentas
     tools = [
         Tool(
             name="plot_data",
             func=plot_data_tool,
-            description="""Cria visualizações de dados. Formato: 'plot_type|x_col|y_col|color_col|title'
+            description="""Cria visualizações de dados. 
+            Formato: 'tipo|coluna_x|coluna_y|coluna_cor|titulo'
             
             Tipos disponíveis:
-            - histogram: distribuição (precisa x_col)
-            - scatter: relação entre variáveis (precisa x_col e y_col)
-            - box: boxplot para outliers (precisa y_col)
-            - bar: dados categóricos (precisa x_col, y_col opcional)
-            - line: séries temporais (precisa x_col e y_col)
+            - histogram: para distribuições (precisa coluna_x)
+            - scatter: para relações (precisa coluna_x e coluna_y)
+            - box: para outliers (precisa coluna_y)
+            - bar: para categorias (precisa coluna_x)
+            - line: para séries temporais (precisa coluna_x e coluna_y)
             - correlation_heatmap: matriz de correlação (sem parâmetros)
             
-            Exemplo: "scatter|Time|Amount||Transações por tempo"
+            Exemplo: "histogram|Amount|||Distribuição de Valores"
             """
         ),
         Tool(
             name="get_data_context",
             func=get_data_context_tool,
-            description="Obtém informações sobre a estrutura do dataset, colunas, correlações e estatísticas."
+            description="Obtém informações sobre a estrutura do dataset, colunas disponíveis, estatísticas e correlações."
         )
     ]
     
-    # Create prompt
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad")
-    ])
+    # Template ReAct em português
+    template = """Responda SEMPRE em Português do Brasil. 
+
+Você tem acesso às seguintes ferramentas:
+
+{tools}
+
+Use EXATAMENTE este formato:
+
+Question: a pergunta do usuário
+Thought: você deve pensar sobre o que fazer
+Action: a ação a tomar, deve ser uma de [{tool_names}]
+Action Input: a entrada para a ação
+Observation: o resultado da ação
+... (este ciclo Thought/Action/Action Input/Observation pode repetir N vezes)
+Thought: Agora eu sei a resposta final
+Final Answer: a resposta final em português brasileiro
+
+IMPORTANTE:
+- Sempre use "Action:" e "Action Input:" exatamente como mostrado
+- Para gráficos, use o formato: tipo|col_x|col_y|cor|titulo
+- Seja conciso e direto nas respostas
+
+Comece agora!
+
+Question: {input}
+Thought: {agent_scratchpad}"""
+
+    prompt = PromptTemplate.from_template(template)
     
-    # Create agent
-    agent = create_openai_tools_agent(llm, tools, prompt)
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
+    # Criar agente
+    agent = create_react_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(
+        agent=agent, 
+        tools=tools, 
+        verbose=True,
+        handle_parsing_errors=True,
+        max_iterations=6,
+        early_stopping_method="generate"
+    )
     
     return agent_executor
 
@@ -349,95 +390,117 @@ def create_agent_executor(summary: Dict[str, Any]):
 def main():
     st.set_page_config(page_title="I2A2 - Agente E.D.A.", layout="wide")
     st.title("🤖 I2A2 - Agente E.D.A.")
-    st.subheader("Autor: Wagner dos Santos Brito")
+    
+    st.markdown("""**Autor: Wagner dos Santos Brito**""")
 
+    api_key = os.getenv("GOOGLE_API_KEY", "")
     # Initialize session state
     if 'generated_plots' not in st.session_state:
         st.session_state.generated_plots = []
+    if 'google_api_key' not in st.session_state:
+        st.session_state.google_api_key = os.getenv("GOOGLE_API_KEY", "")
+        api_key = st.session_state.google_api_key
 
     # Sidebar
-    st.sidebar.header("⚙️ Controles")
-    uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv", "txt"])
+    st.sidebar.header("⚙️ Configuração")
     
-    if st.sidebar.button("🗑️ Limpar memória"):
-        clear_memory()
-        st.session_state.generated_plots = []
-        st.sidebar.success("Memória limpa!")
+    # API Key input    
+    if api_key:
+        st.sidebar.success("✓ API Key configurada!")
+    else:
+        st.sidebar.warning("⚠️ Configure a API Key para usar o agente")
+        api_key = st.sidebar.text_input(
+            "🔑 Google API Key:",
+            value=st.session_state.google_api_key,
+            type="password",
+            help="Obtenha em: https://makersuite.google.com/app/apikey"
+        )
+        st.session_state.google_api_key = api_key
+        os.environ["GOOGLE_API_KEY"] = api_key
+    
+    # File uploader
+    uploaded_file = st.sidebar.file_uploader("📤 Upload CSV", type=["csv", "txt"])
+    
+    # Clear buttons
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("🗑️ Limpar memória"):
+            clear_memory()
+            st.sidebar.success("Limpo!")
+    with col2:
+        if st.button("🧹 Limpar gráficos"):
+            st.session_state.generated_plots = []
+            st.rerun()
 
     # Load dataframe
     df = None
     if uploaded_file is not None:
         try:
             df = safe_read_csv(uploaded_file)
-            st.sidebar.success(f"✓ {uploaded_file.name} ({df.shape[0]}x{df.shape[1]})")
+            st.sidebar.success(f"✓ Arquivo carregado: {df.shape[0]} linhas × {df.shape[1]} colunas")
         except Exception as e:
-            st.sidebar.error(f"Erro: {e}")
+            st.sidebar.error(f"❌ Erro ao ler arquivo: {e}")
             st.stop()
     else:
-        st.info("📤 Faça upload de um arquivo CSV para começar.")
+        st.info("👆 Faça upload de um arquivo CSV na barra lateral para começar.")
         st.stop()
 
-    # Precompute summary
-    with st.spinner("Analisando dados..."):
+    # Analyze data
+    with st.spinner("📊 Analisando dados..."):
         summary = summarize_dataframe(df)
-        outliers = detect_outliers_isolation_forest(df)
-        
-        # Set global data
+        outliers = detect_outliers(df)
         set_current_data(df, summary)
 
-    # Quick stats
+    # Quick statistics
+    st.subheader("📈 Estatísticas Rápidas")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("📊 Linhas", summary['n_rows'])
+    col1.metric("📊 Linhas", f"{summary['n_rows']:,}")
     col2.metric("📋 Colunas", summary['n_cols'])
-    col3.metric("🔢 Numéricas", len(summary.get('numeric_describe', {})))
+    col3.metric("🔢 Numéricas", len(summary.get('numeric_stats', {})))
     col4.metric("⚠️ Outliers", outliers['n_outliers'])
 
-    # Data preview
-    with st.expander("👁️ Ver dados (primeiras 100 linhas)"):
-        st.dataframe(df.head(100))
+    # Top correlations
+    if summary.get('top_correlations'):
+        with st.expander("🔗 Top 5 Correlações"):
+            for var1, var2, corr in summary['top_correlations'][:5]:
+                col_a, col_b = st.columns([3, 1])
+                col_a.write(f"{var1} ↔ {var2}")
+                col_b.metric("", f"{corr:.3f}")
 
-    # Agent interaction
+    # Data preview
+    with st.expander("👁️ Visualizar Dados (100 primeiras linhas)"):
+        st.dataframe(df.head(100), use_container_width=True)
+
+    # Agent interaction section
     st.subheader("💬 Converse com o Agente")
     
     user_question = st.text_input(
-        "Sua pergunta:",
+        "Sua pergunta sobre os dados:",
         placeholder="Ex: Mostre a distribuição de Amount",
         key="user_input"
     )
     
-    col_ask, col_clear = st.columns([1, 4])
-    with col_ask:
-        ask_button = st.button("🚀 Perguntar", type="primary")
-    with col_clear:
-        if st.button("🧹 Limpar gráficos"):
-            st.session_state.generated_plots = []
-            st.rerun()
-
-    # Check API key
-    if not os.getenv("OPENAI_API_KEY"):
-        st.warning("⚠️ Configure OPENAI_API_KEY para usar o agente.")
-        api_key = st.text_input("OPENAI_API_KEY:", type="password")
-        if st.button("Salvar"):
-            os.environ['OPENAI_API_KEY'] = api_key
-            st.success("✓ Chave salva!")
-            st.rerun()
-        st.stop()
+    ask_button = st.button("🚀 Perguntar ao Agente", type="primary", use_container_width=True)
 
     # Process question
     if ask_button and user_question.strip():
+        if not st.session_state.google_api_key:
+            st.error("❌ Configure sua Google API Key na barra lateral primeiro!")
+            st.stop()
+        
         try:
             # Create agent
-            agent_executor = create_agent_executor(summary)
+            agent_executor = create_agent_executor(st.session_state.google_api_key)
             
-            # Clear previous plots for this question
+            # Clear previous plots
             st.session_state.generated_plots = []
             
             # Run agent
-            with st.spinner("🤔 Pensando..."):
+            with st.spinner("🤔 O agente está pensando..."):
                 result = agent_executor.invoke({"input": user_question})
             
             # Display response
-            st.markdown("### 📝 Resposta:")
+            st.markdown("### 📝 Resposta do Agente:")
             st.write(result['output'])
             
             # Save to memory
@@ -448,24 +511,36 @@ def main():
             })
             
         except Exception as e:
-            st.error(f"❌ Erro: {e}")
+            st.error(f"❌ Erro ao processar pergunta: {e}")
+            if "API_KEY" in str(e).upper():
+                st.info("💡 Verifique se sua API Key está correta e ativa.")
 
     # Display generated plots
     if st.session_state.generated_plots:
-        st.markdown("### 📊 Gráficos Gerados:")
+        st.markdown("### 📊 Visualizações Geradas:")
         for idx, fig in enumerate(st.session_state.generated_plots):
             st.plotly_chart(fig, use_container_width=True, key=f"plot_{idx}")
 
-    # Memory
-    with st.expander("📚 Histórico de Conversas"):
+    # Conversation history
+    with st.expander("📚 Histórico de Conversas (últimas 10)"):
         mem = load_memory()
         if mem:
             for entry in reversed(mem[-10:]):
-                st.markdown(f"**Q:** {entry['question']}")
-                st.write(entry['answer'])
+                st.markdown(f"**🙋 Pergunta ({entry['timestamp'][:19]}):**")
+                st.info(entry['question'])
+                st.markdown(f"**🤖 Resposta:**")
+                st.success(entry['answer'])
                 st.markdown("---")
         else:
-            st.write("Nenhuma conversa anterior.")
+            st.write("Nenhuma conversa salva ainda. Faça uma pergunta para começar!")
+
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; color: gray;'>
+    <small>Powered by Google Gemini 🚀 | LangChain 🦜 | Streamlit ⚡</small>
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
