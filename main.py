@@ -307,9 +307,9 @@ def get_data_context_tool(query: str) -> str:
 def create_agent_executor(google_api_key: str):
     """Cria o agente usando Google Gemini."""
     
-    # Configurar Gemini
+    # Configurar Gemini - usando modelo correto
     llm = ChatGoogleGenerativeAI(
-        model="gemma-3n-e2b-it",
+        model="gemma-3n-e2b-it",  # Modelo estável e compatível
         google_api_key=google_api_key,
         temperature=0.1,
         convert_system_message_to_human=True
@@ -388,35 +388,42 @@ Thought: {agent_scratchpad}"""
 # Streamlit App
 # -------------------------
 def main():
-    st.set_page_config(page_title="I2A2 - Agente E.D.A.", layout="wide")
-    st.title("🤖 I2A2 - Agente E.D.A.")
+    st.set_page_config(page_title="I2A2 - Desafio Extra - Agente E.D.A", layout="wide")
+    st.title("🤖 I2A2 - Desafio Extra - Agente E.D.A")
     
-    st.markdown("""**Autor: Wagner dos Santos Brito**""")
+    st.markdown("""
+    ✨ **Autor: Wagner dos Santos Brito**
+    
+    📝 **Como obter sua chave API:**
+    1. Acesse: https://aistudio.google.com/app/apikey
+    2. Clique em "Create API Key" ou "Get API Key"
+    3. Cole a chave na barra lateral
+    """)
 
-    api_key = os.getenv("GOOGLE_API_KEY", "")
+    api_key = os.environ["GOOGLE_API_KEY"]
     # Initialize session state
     if 'generated_plots' not in st.session_state:
         st.session_state.generated_plots = []
     if 'google_api_key' not in st.session_state:
         st.session_state.google_api_key = os.getenv("GOOGLE_API_KEY", "")
-        api_key = st.session_state.google_api_key
 
     # Sidebar
     st.sidebar.header("⚙️ Configuração")
     
-    # API Key input    
+    
     if api_key:
+        st.session_state.google_api_key = api_key
+        os.environ["GOOGLE_API_KEY"] = api_key
         st.sidebar.success("✓ API Key configurada!")
     else:
         st.sidebar.warning("⚠️ Configure a API Key para usar o agente")
+        # API Key input
         api_key = st.sidebar.text_input(
             "🔑 Google API Key:",
             value=st.session_state.google_api_key,
             type="password",
-            help="Obtenha em: https://makersuite.google.com/app/apikey"
+            help="Obtenha em: https://aistudio.google.com/app/apikey"
         )
-        st.session_state.google_api_key = api_key
-        os.environ["GOOGLE_API_KEY"] = api_key
     
     # File uploader
     uploaded_file = st.sidebar.file_uploader("📤 Upload CSV", type=["csv", "txt"])
@@ -476,7 +483,7 @@ def main():
     
     user_question = st.text_input(
         "Sua pergunta sobre os dados:",
-        placeholder="Ex: Mostre a distribuição de Amount",
+        placeholder="Ex: Qual a média de Amount? (ou: Mostre a distribuição de Amount)",
         key="user_input"
     )
     
@@ -489,8 +496,12 @@ def main():
             st.stop()
         
         try:
-            # Create agent
+            # Create agent with selected model
             agent_executor = create_agent_executor(st.session_state.google_api_key)
+            
+            # Atualizar modelo no agente
+            if hasattr(agent_executor.agent, 'llm_chain') and hasattr(agent_executor.agent.llm_chain, 'llm'):
+                agent_executor.agent.llm_chain.llm.model = st.session_state.selected_model
             
             # Clear previous plots
             st.session_state.generated_plots = []
