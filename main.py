@@ -33,43 +33,50 @@ load_dotenv()
 # -------------------------
 MEMORY_FILENAME = "memory.json"
 
-SYSTEM_PROMPT = """Você é um assistente especialista em análise de dados com capacidade de criar visualizações.
+SYSTEM_PROMPT = """Você é um assistente especialista em análise de dados.
 
 Você tem acesso a:
-1. Contexto dos dados (get_data_context): estrutura, estatísticas, correlações
-2. Ferramenta de plotagem (plot_data): para criar gráficos
+1. get_data_context: informações sobre estrutura, estatísticas e correlações dos dados
+2. plot_data: ferramenta para criar gráficos
 
-IMPORTANTE: Sempre responda em Português do Brasil.
+SEMPRE responda em Português do Brasil.
 
-REGRA FUNDAMENTAL SOBRE GRÁFICOS:
-- Crie gráficos SOMENTE quando o usuário solicitar explicitamente (palavras como: "mostre", "plote", "crie gráfico", "visualize", "exiba", "gere gráfico")
-- Se o usuário apenas perguntar ou pedir análise SEM mencionar visualização, responda apenas com texto
-- Não sugira criar gráficos, apenas crie quando explicitamente solicitado
+REGRA CRÍTICA SOBRE GRÁFICOS:
+- Crie gráficos APENAS quando o usuário usar palavras EXPLÍCITAS de visualização:
+  "mostre", "plote", "crie gráfico", "visualize", "exiba", "gere gráfico", "desenhe"
+- Se o usuário apenas PERGUNTA ou pede ANÁLISE textual, responda SOMENTE com texto:
+  NÃO crie gráficos para: "qual", "quanto", "existe", "tem", "calcule", "analise"
+- NUNCA sugira criar gráficos espontaneamente
+- NUNCA pergunte se o usuário quer ver um gráfico
 
-Para criar gráficos quando solicitado, use este formato EXATO:
+Para criar gráficos (quando explicitamente solicitado):
 Action: plot_data
 Action Input: tipo|coluna_x|coluna_y|coluna_cor|título
 
-Tipos de gráfico disponíveis:
-- histogram: distribuição de valores (precisa coluna_x)
+Tipos disponíveis:
+- histogram: distribuição (precisa coluna_x)
 - scatter: relação entre variáveis (precisa coluna_x e coluna_y)
-- box: detecção de outliers (precisa coluna_y)
-- bar: dados categóricos ou agregações (precisa coluna_x)
+- box: outliers (precisa coluna_y)
+- bar: categorias (precisa coluna_x)
 - line: séries temporais (precisa coluna_x e coluna_y)
-- correlation_heatmap: matriz de correlação completa (sem parâmetros)
+- correlation_heatmap: matriz completa (sem parâmetros)
 
-Exemplos de uso:
-- histogram|Amount|||Distribuição de Valores
-- scatter|Time|Amount||Valores ao longo do tempo
-- correlation_heatmap||||Correlações
+Exemplos de Comportamento Correto:
 
-Exemplos de perguntas:
-- "Qual a média de Amount?" → Responda SÓ com texto, SEM gráfico
-- "Mostre a distribuição de Amount" → Responda com texto E crie histogram
-- "Existe correlação entre X e Y?" → Responda SÓ com texto, SEM gráfico
-- "Plote X versus Y" → Responda com texto E crie scatter plot
+Pergunta: "Qual a média de Amount?"
+Resposta: "A média de Amount é X" (SEM gráfico)
 
-Seja direto, conciso e forneça insights valiosos sobre os dados."""
+Pergunta: "Mostre a distribuição de Amount"
+Resposta: Texto + Action: plot_data + histogram
+
+Pergunta: "Existe correlação entre X e Y?"
+Resposta: "Sim, correlação de 0.85" (SEM gráfico)
+
+Pergunta: "Plote X versus Y"
+Resposta: Texto + Action: plot_data + scatter
+
+Seja direto, conciso e forneça insights valiosos."""
+
 
 # -------------------------
 # Global state
@@ -259,7 +266,7 @@ def create_plot(plot_type: str, x_col: str = None, y_col: str = None,
         st.error(f"Erro ao criar gráfico: {e}")
         return None
 
-def plot_data_tool(query: str) -> str:
+def plot_data_tool_old(query: str) -> str:
     """Ferramenta para criar visualizações."""
     try:
         parts = [p.strip() for p in query.split("|")]
@@ -281,6 +288,41 @@ def plot_data_tool(query: str) -> str:
     
     except Exception as e:
         return f"✗ Erro ao processar: {str(e)}"
+
+# ✅ Adicionar validação de keywords no plot_data_tool (camada extra)
+def plot_data_tool(query: str) -> str:
+    """Ferramenta para criar visualizações - com validação extra."""
+    
+    # Lista de keywords que indicam intenção de visualização
+    viz_keywords = [
+        'mostre', 'plote', 'crie', 'gere', 'visualize', 
+        'exiba', 'desenhe', 'gráfico', 'plot', 'chart'
+    ]
+    
+    # Verificar se há contexto de visualização
+    # (Esta verificação é redundante, mas adiciona segurança)
+    
+    try:
+        parts = [p.strip() for p in query.split("|")]
+        plot_type = parts[0] if len(parts) > 0 else ""
+        x_col = parts[1] if len(parts) > 1 and parts[1] else None
+        y_col = parts[2] if len(parts) > 2 and parts[2] else None
+        color_col = parts[3] if len(parts) > 3 and parts[3] else None
+        title = parts[4] if len(parts) > 4 and parts[4] else None
+        
+        fig = create_plot(plot_type, x_col, y_col, color_col, title)
+        
+        if fig is not None:
+            if 'generated_plots' not in st.session_state:
+                st.session_state.generated_plots = []
+            st.session_state.generated_plots.append(fig)
+            return f"✓ Gráfico {plot_type} criado com sucesso!"
+        else:
+            return f"✗ Erro: verifique as colunas '{x_col}' e '{y_col}'."
+    
+    except Exception as e:
+        return f"✗ Erro ao processar: {str(e)}"
+
 
 def get_data_context_tool(query: str) -> str:
     """Fornece informações sobre o dataset."""
@@ -304,12 +346,12 @@ def get_data_context_tool(query: str) -> str:
 # -------------------------
 # Agent Setup with Gemini
 # -------------------------
-def create_agent_executor(google_api_key: str):
+def create_agent_executor_old(google_api_key: str):
     """Cria o agente usando Google Gemini."""
     
     # Configurar Gemini - usando modelo correto
     llm = ChatGoogleGenerativeAI(
-        model="gemma-3n-e2b-it",  # Modelo estável e compatível
+        model="gemini-2.5-flash",  # "gemini-1.5-flash"
         google_api_key=google_api_key,
         temperature=0.1,
         convert_system_message_to_human=True
@@ -378,8 +420,90 @@ Thought: {agent_scratchpad}"""
         tools=tools, 
         verbose=True,
         handle_parsing_errors=True,
-        max_iterations=6,
-        early_stopping_method="generate"
+        max_iterations=15,        
+        early_stopping_method="force" #"generate"
+    )
+    
+    return agent_executor
+
+def create_agent_executor(google_api_key: str):
+    """Cria o agente usando Google Gemini."""
+    
+    # ✅ CORREÇÃO: Usar modelo Gemini válido
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",  # Modelo correto e gratuito
+        google_api_key=google_api_key,
+        temperature=0.1,  # Baixa temperatura para respostas mais determinísticas
+        convert_system_message_to_human=True
+    )
+    
+    # Definir ferramentas com descrições mais claras
+    tools = [
+        Tool(
+            name="get_data_context",
+            func=get_data_context_tool,
+            description="""Use esta ferramenta para obter informações sobre o dataset.
+            Retorna: estrutura, colunas, estatísticas descritivas e correlações.
+            Use SEMPRE antes de responder perguntas sobre os dados."""
+        ),
+        Tool(
+            name="plot_data",
+            func=plot_data_tool,
+            description="""⚠️ Use APENAS quando o usuário EXPLICITAMENTE pedir visualização.
+            
+            Palavras-chave que indicam necessidade de gráfico:
+            - "mostre", "plote", "crie gráfico", "visualize", "exiba", "desenhe"
+            
+            NÃO use para perguntas como:
+            - "qual", "quanto", "existe", "tem", "calcule", "analise"
+            
+            Formato: 'tipo|coluna_x|coluna_y|coluna_cor|titulo'
+            
+            Tipos: histogram, scatter, box, bar, line, correlation_heatmap
+            
+            Exemplo: "histogram|Amount|||Distribuição de Valores"
+            """
+        )
+    ]
+    
+    # Template ReAct otimizado
+    template = """Responda SEMPRE em Português do Brasil.
+
+REGRA PRINCIPAL: Crie gráficos APENAS se o usuário usar palavras como "mostre", "plote", "visualize", "crie gráfico".
+Para perguntas simples (qual, quanto, existe), responda APENAS com texto usando get_data_context.
+
+Ferramentas disponíveis:
+{tools}
+
+Use este formato EXATO:
+
+Question: a pergunta do usuário
+Thought: o que devo fazer para responder
+Action: uma de [{tool_names}]
+Action Input: entrada para a ação
+Observation: resultado da ação
+... (repita se necessário)
+Thought: agora sei a resposta
+Final Answer: resposta em português
+
+⚠️ LEMBRE-SE:
+- Para perguntas analíticas: use get_data_context e responda com texto
+- Para pedidos de visualização: use plot_data
+- Nunca sugira criar gráficos espontaneamente
+
+Question: {input}
+Thought: {agent_scratchpad}"""
+
+    prompt = PromptTemplate.from_template(template)
+    
+    agent = create_react_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(
+        agent=agent, 
+        tools=tools, 
+        verbose=True,
+        handle_parsing_errors=True,
+        max_iterations=10,  # Reduzido para evitar loops
+        early_stopping_method="force"
     )
     
     return agent_executor
@@ -392,12 +516,7 @@ def main():
     st.title("🤖 I2A2 - Desafio Extra - Agente E.D.A")
     
     st.markdown("""
-    ✨ **Autor: Wagner dos Santos Brito**
-    
-    📝 **Como obter sua chave API:**
-    1. Acesse: https://aistudio.google.com/app/apikey
-    2. Clique em "Create API Key" ou "Get API Key"
-    3. Cole a chave na barra lateral
+    ✨ **Aluno: Wagner dos Santos Brito**
     """)
 
     api_key = os.environ["GOOGLE_API_KEY"]
